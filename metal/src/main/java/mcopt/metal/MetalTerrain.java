@@ -474,7 +474,7 @@ final class MetalTerrain {
 	/** The pulled twin of p over the quad list in work, with the draw's arguments at args. */
 	private void drawPulled(long enc, MetalPipeline p, List<MetalBuffer> arenas, long addresses, MetalBuffer work, long list, long args, MetalBuffer regions,
 		long regionsOffset) {
-		Native.pipeline(enc, p.pulled, p.depthState, p.cull ? 1 : 0, 0, p.depthBiasConstant, p.depthBiasSlope, p.primitive);
+		Native.pipeline(enc, p.pulled, p.depthState, p.cull, 0, p.depthBiasConstant, p.depthBiasSlope, p.primitive);
 		for (MetalBuffer arena : arenas) Native.useResource(enc, arena.handle);
 		Native.bytes(enc, ARENAS_SLOT, addresses, MAX_ARENAS * 8);
 		Native.buffer(enc, QUADS_SLOT, work.handle, list);

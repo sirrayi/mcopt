@@ -32,7 +32,14 @@ public final class GenMixinPlugin implements IMixinConfigPlugin {
 	@Override
 	public boolean shouldApplyMixin(String targetClassName, String mixinClassName) {
 		if (mixinClassName.endsWith(".GenWorldgenQosMixin")) return WORLDGEN_QOS;
-		if (mixinClassName.endsWith(".GenNoiseChunkMixin")) return NATIVE_NOISE;
+		if (mixinClassName.endsWith(".GenNoiseChunkMixin")) {
+			// C2ME redirects the same RandomState.samplersWithContext in NoiseChunk.<init>; its noise wins either way.
+			if (NATIVE_NOISE && net.fabricmc.loader.api.FabricLoader.getInstance().isModLoaded("c2me")) {
+				System.out.println("mcopt-gen: GenNoiseChunkMixin not applied: c2me is loaded");
+				return false;
+			}
+			return NATIVE_NOISE;
+		}
 		return false;
 	}
 

@@ -1,0 +1,12 @@
+{
+	"schemaVersion": 1,
+	"id": "mcopt-bench",
+	"version": "${version}",
+	"name": "mcopt bench",
+	"description": "Scripted fps benchmark for mcopt (inactive unless -Dmcopt.bench or mcopt.bench in config/mcopt.properties names phases).",
+	"license": "Apache-2.0",
+	"authors": ["mcopt contributors"],
+	"environment": "client",
+	"mixins": ["mcopt-bench.mixins.json"],
+	"depends": { "fabricloader": ">=0.19.5", "minecraft": "~26.3", "java": ">=25" }
+}
