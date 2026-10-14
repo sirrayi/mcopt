@@ -217,6 +217,8 @@ final class OwnFrag {
 	static final int CAP_FAULT = Math.max(0, Integer.getInteger("mcopt.own.frag.capFault", 0));
 	/** (fault injection, -Dmcopt.own.frag.tCapFault=N) the unit test's list holds at most N entries: the T loss counter must see it. */
 	static final int T_CAP_FAULT = Math.max(0, Integer.getInteger("mcopt.own.frag.tCapFault", 0));
+	/** -Dmcopt.own.fat (OwnTerrain.FAT; no probe key): whole-instance cull records — the exact draws can't read them. */
+	private static final boolean FAT = Boolean.getBoolean("mcopt.own.fat");
 	/** tieClose frames by OwnTerrain.tieCloseFallback reason (0 = closure drawn), since the last log. */
 	private static final long[] TIE_FRAMES = new long[6];
 	/**
@@ -768,7 +770,7 @@ final class OwnFrag {
 			MemoryUtil.memCopy(g, this.fragFrame, FRAG_FRAME_BYTES);  // (the unit test reads it at draw time)
 			// a1Exact: the cull writes A1's exact-count draws (mode 1); with only -Dmcopt.own.stats the same kernel counts A1's real quads (mode 2)
 			// (not with tight / the oracle: their vertex paths read the list as records; not with cutfirst's reversed solid order)
-			boolean able = c.uocc && !c.mesh && !c.mesh4 && !c.nonidx && !c.posonly && !c.tight && !ORACLE && c.order != CUTFIRST && !Boolean.getBoolean("mcopt.own.fat");
+			boolean able = c.uocc && !c.mesh && !c.mesh4 && !c.nonidx && !c.posonly && !c.tight && !ORACLE && c.order != CUTFIRST && !FAT;
 			this.a1Req = OwnProbe.bool("frag.a1Exact", A1_EXACT);
 			this.a2Req = OwnProbe.bool("frag.a2Exact", A2_EXACT);
 			this.a1Exact = able && !EXACT_GATED && this.a1Req;
@@ -973,8 +975,10 @@ final class OwnFrag {
 			int uoccMode = OwnProbe.integer("frag.fine", c.fine) | (c.hull ? 256 : 0) | (c.diag == 1 ? 512 : 0) | (c.rpyr ? 1024 : 0) | (pyr << 13)
 				| (pyr == 0 && PYR_AUTO > 0 ? 1 << 15 | Math.min(255, PYR_AUTO / 64) << 16 : 0);
 			boolean late = OwnProbe.bool("frag.testLate", TEST_LATE) && (SPLIT_NEAR > 0 || SPLIT_A) && !c.rpyr && c.diag != 1;  // (the test reads the pyramid the first call built)
+			if (!late) this.terrain.tOccArm();
 			split = OwnNative.fragUocc(this.own, this.enc, this.cullFrame, this.cullFrameLength, this.fragFrame, FRAG_FRAME_BYTES, this.clipAddr, table, recs,
 				this.args, lists(c), uoccMode | (late ? 2048 : 0)) == 1;
+			this.terrain.tOccDisarm();
 			if (this.terrain.tracing()) {
 				System.out.println("mcopt-metal trace: compute encoder 'own frag unit occlusion' #" + OwnNative.lastComputeGroup() + " (the split, profiled like a pass)");
 			}
@@ -1068,8 +1072,10 @@ final class OwnFrag {
 
 	private void afterLater(Config c, boolean split, boolean late, int uoccMode, long table, long recs) {
 		if (split && late) {
+			this.terrain.tOccArm();
 			OwnNative.fragUocc(this.own, this.enc, this.cullFrame, this.cullFrameLength, this.fragFrame, FRAG_FRAME_BYTES, this.clipAddr, table, recs, this.args,
 				lists(c), uoccMode | 4096);
+			this.terrain.tOccDisarm();
 			if (this.terrain.tracing()) System.out.println("mcopt-metal trace: compute encoder 'own frag unit occlusion' (testLate's test) #" + OwnNative.lastComputeGroup());
 		} else if (split) {
 			OwnNative.split(this.own, this.enc);

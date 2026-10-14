@@ -177,6 +177,8 @@ public final class Profile {
 			#mcopt.own=false
 			# Far terrain (EXPERIMENTAL, off by default; for Macs with 10 or more GPU cores): remove the # below.
 			#mcopt.lod=true
+			# Hide the fps counter in the top-left corner.
+			#mcopt.fps=false
 			""".formatted(name);
 		try {
 			Files.createDirectories(cfg.getParent());

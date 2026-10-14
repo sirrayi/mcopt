@@ -82,6 +82,11 @@ typedef struct {
 	// draws and lists (not retained: OwnFrag keeps them)
 	id<MTLComputePipelineState> uoccTest, uoccFinish, uoccTestF, uoccTestFB, uoccTestFG;
 	id<MTLBuffer> uoccVis, uoccT, uoccBArgs, uoccListsB;
+	// (-Dmcopt.own.frag.tOcc: our translucent list, its count at tOccOff in tOccArgs, its capacity; one use, set before the test)
+	id<MTLBuffer> tOccList, tOccArgs;
+	int64_t tOccOff;
+	uint32_t tOccCap;
+	id<MTLComputePipelineState> tOccK, tCompactK;
 	// -Dmcopt.own.frag.tieClose: the tie components' record rings (terrain.metal fragTiePromote; not retained: OwnTerrain keeps it)
 	id<MTLBuffer> tieRing;
 	// -Dmcopt.own.frag.tieCloseVerify: this frame's phase A lists (not retained) and the two check kernels (made on first use)
@@ -163,7 +168,7 @@ Own *mco_new(Ctx *ctx, const char *source, int compact, int fat, int cpuClip, ch
 			*slots[i] = fn ? [ctx->device newComputePipelineStateWithFunction:fn error:&e] : nil;
 			if (!*slots[i]) {
 				ownErr(e, kernels[i], err, errCap);
-				return NULL;
+				goto fail;
 			}
 		}
 		MTLFunctionConstantValues *vcv = [[MTLFunctionConstantValues new] autorelease];
@@ -199,7 +204,7 @@ Own *mco_new(Ctx *ctx, const char *source, int compact, int fat, int cpuClip, ch
 			id<MTLFunction> fs = [lib newFunctionWithName:@"own_fs" constantValues:cv error:&e];
 			if (!fs) {
 				ownErr(e, "own_fs", err, errCap);
-				return NULL;
+				goto fail;
 			}
 			if (c == 4) w->fsCutoutLevel = fs;
 			else if (c == 3) w->fsSolidLevel = fs;
@@ -211,7 +216,7 @@ Own *mco_new(Ctx *ctx, const char *source, int compact, int fat, int cpuClip, ch
 		w->fsFlat = [lib newFunctionWithName:@"own_fs_flat" constantValues:[[MTLFunctionConstantValues new] autorelease] error:&e];
 		if (!w->vs || !w->vsTranslucent || !w->vsQuads) {
 			snprintf(err, errCap, "own terrain.metal: no own_vs");
-			return NULL;
+			goto fail;
 		}
 		MTLDepthStencilDescriptor *dd = [[MTLDepthStencilDescriptor new] autorelease];
 		dd.depthCompareFunction = MTLCompareFunctionGreaterEqual;  // the game's reversed Z (DepthStencilState.DEFAULT)
@@ -231,7 +236,7 @@ Own *mco_new(Ctx *ctx, const char *source, int compact, int fat, int cpuClip, ch
 			w->fsAlpha = [lib newFunctionWithName:@"own_fs_alpha" constantValues:acv error:&e];
 			if (!w->fsAlpha) {
 				ownErr(e, "own_fs_alpha", err, errCap);
-				return NULL;
+				goto fail;
 			}
 		}
 		uint16_t idx[64 * 6];
@@ -249,6 +254,16 @@ Own *mco_new(Ctx *ctx, const char *source, int compact, int fat, int cpuClip, ch
 		}
 		w->quadIdxG = [ctx->device newBufferWithBytes:idxG length:sizeof idxG options:MTLResourceStorageModeShared];
 		return w;
+fail:
+		for (int i = 0; i < (int) (sizeof slots / sizeof slots[0]); i++) [*slots[i] release];
+		[w->vsTranslucent release]; [w->vsQuads release];
+		for (int i = 0; i < 3; i++) [w->vsModes[i] release];  // (w->vs aliases vsModes[0])
+		[w->fsSolid release]; [w->fsCutout release]; [w->fsTranslucent release];
+		[w->fsSolidLevel release]; [w->fsCutoutLevel release]; [w->fsFlat release]; [w->fsAlpha release];
+		[w->depth release]; [w->depthGreater release]; [w->depthEqual release];
+		[w->functions release]; [w->library release];
+		free(w);
+		return NULL;
 	}
 }
 
@@ -1476,7 +1491,7 @@ static void ownPyramid(Own *w, Enc *enc, id<MTLComputeCommandEncoder> c, id<MTLT
 int mco_frag_occ(Own *w, Enc *enc) {
 	w->fragOcc[4] = 0;
 	if (!enc->render || !enc->depth) return 0;
-	uint8_t qf[128];
+	uint8_t qf[256];  // (ownPyramid writes the QuadFrame layout's pyramid fields, up to byte 140)
 	memset(qf, 0, sizeof qf);
 	id<MTLTexture> depth = enc->depth;
 	id<MTLComputeCommandEncoder> c = mc_render_suspend(enc);
@@ -1549,6 +1564,14 @@ void mco_frag_uocc_buffers(Own *w, id<MTLBuffer> occVis, id<MTLBuffer> tList, id
 	w->uoccT = tList;
 	w->uoccBArgs = bArgs;
 	w->uoccListsB = listsB;
+}
+
+// -Dmcopt.own.frag.tOcc: the translucent list the next unit test also tests (own_t_occ), nil: none.
+void mco_t_occ(Own *w, id<MTLBuffer> list, id<MTLBuffer> args, int64_t off, int cap) {
+	w->tOccList = list;
+	w->tOccArgs = args;
+	w->tOccOff = off;
+	w->tOccCap = (uint32_t) MAX(0, cap);
 }
 
 // -Dmcopt.own.frag.tieClose: the record rings of the tie components (a uint per record, OwnTerrain), nil: none.
@@ -1707,6 +1730,29 @@ int mco_frag_uocc(Own *w, Enc *enc, const void *cullFrame, int cullLength, const
 	[c setBuffer:w->uoccListsB offset:0 atIndex:16];
 	[c setTexture:depth ? hizTex : nil atIndex:0];
 	[c dispatchThreadgroupsWithIndirectBuffer:args indirectBufferOffset:(NSUInteger) (lists * 8 + 19) * 4 threadsPerThreadgroup:MTLSizeMake(64, 1, 1)];
+	if (w->tOccList && w->tOccCap > 0 && depth && ft[20] != 0) {
+		// (-Dmcopt.own.frag.tOcc: our translucent list against the same pyramid; it writes only the list's bit 31)
+		id<MTLComputePipelineState> tk = ownLazyKernel(w, &w->tOccK, "own_t_occ");
+		if (tk) {
+			uint32_t cap = w->tOccCap;
+			[c setComputePipelineState:tk];
+			[c setBuffer:w->tOccList offset:0 atIndex:4];
+			[c setBuffer:w->tOccArgs offset:(NSUInteger) w->tOccOff atIndex:5];
+			[c setBytes:&cap length:4 atIndex:6];
+			[c setTexture:hizTex atIndex:0];
+			[c dispatchThreads:MTLSizeMake(cap, 1, 1) threadsPerThreadgroup:MTLSizeMake(64, 1, 1)];
+			id<MTLComputePipelineState> ck = ownLazyKernel(w, &w->tCompactK, "own_t_compact");
+			if (ck) {
+				// (the hidden entries left out, in order: the draws' instance counts shrink)
+				NSUInteger tg = MIN((NSUInteger) 1024, ck.maxTotalThreadsPerThreadgroup) / 32 * 32;
+				[c memoryBarrierWithScope:MTLBarrierScopeBuffers];
+				[c setComputePipelineState:ck];
+				[c dispatchThreadgroups:MTLSizeMake(1, 1, 1) threadsPerThreadgroup:MTLSizeMake(tg, 1, 1)];
+			}
+		}
+	}
+	w->tOccList = nil;
+	w->tOccArgs = nil;
 	if (mco_uocc_enc) c = ownNextCompute(enc, c, @"own frag uocc finish", 8);
 	else [c memoryBarrierWithScope:MTLBarrierScopeBuffers];
 	// (vGroup / vArgsCopy: frag_uocc_finish_g and phase B's grouped arguments; else the base's frag_uocc_finish)
@@ -1839,8 +1885,11 @@ int mco_quads_b(Own *w, Enc *enc, const void *frame, int frameLength, id<MTLBuff
 	if (frameLength >= 152) memcpy(&units, qf + 148, 4);  // QuadFrame.units
 	memcpy(&listCap, qf + 128, 4);                        // QuadFrame.listCap
 	if (units && (!w->qUnits || w->qUnits.length < (NSUInteger) listCap * 4)) {
-		// (the old one is left alive, not released: a frame still in flight may read it; growth is rare and doubles)
+		id<MTLBuffer> old = w->qUnits;
 		w->qUnits = [w->ctx->device newBufferWithLength:MAX((NSUInteger) listCap * 8, 4) options:MTLResourceStorageModePrivate];
+		// a frame still in flight may read the old buffer: release it once this frame's command buffer (committed
+		// after all of them) completes
+		if (old) [mc_frame_cmd(enc) addCompletedHandler:^(id<MTLCommandBuffer> _) { [old release]; }];
 	}
 	uint32_t flat = 0;
 	if (frameLength >= 168) memcpy(&flat, qf + 164, 4);  // QuadFrame.flat

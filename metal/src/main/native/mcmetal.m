@@ -6,6 +6,7 @@
 #import <CoreVideo/CoreVideo.h>
 #import <QuartzCore/CAMetalLayer.h>
 #import <QuartzCore/CABase.h>
+#import <MetalFX/MetalFX.h>
 #include <mach/mach_time.h>
 #include <sys/event.h>
 #include <math.h>
@@ -64,6 +65,8 @@ Ctx *mc_create(char *name, int nameCap, char *err, int errCap) {
 		ctx->builtins = lib;
 		ctx->present = present;
 		ctx->presentSampler = [device newSamplerStateWithDescriptor:sd];
+		sd.minFilter = sd.magFilter = MTLSamplerMinMagFilterLinear;
+		ctx->presentSamplerLinear = [device newSamplerStateWithDescriptor:sd];
 		ctx->clearPipelines = [NSMutableDictionary new];
 		ctx->depthKeep = [device newDepthStencilStateWithDescriptor:dd];
 		dd.depthWriteEnabled = YES;
@@ -1793,10 +1796,57 @@ id<CAMetalDrawable> mc_layer_next(CAMetalLayer *layer) {
 }
 
 // Draws src into the drawable (flipped back to top-down) and schedules the present on the current command buffer.
+// -Dmcopt.renderScale: a frame smaller than the drawable is upscaled by MetalFX's spatial scaler (edge-aware, with sharpening)
+// into a drawable-sized texture that the present draw then copies 1:1. Without MetalFX support the present draw stretches the
+// frame with a linear sampler. Render thread only (mc_present); the scaler and its output are rebuilt when a size or format changes.
+static id<MTLFXSpatialScaler> fxScaler;
+static id<MTLTexture> fxOut;
+static int fxUnsupported;
+
+static id<MTLTexture> fxUpscale(Enc *enc, id<MTLTexture> src, NSUInteger w, NSUInteger h) {
+	if (fxUnsupported) return nil;
+	id<MTLDevice> device = enc->ctx->device;
+	if (!fxScaler || fxScaler.inputWidth != src.width || fxScaler.inputHeight != src.height || fxScaler.outputWidth != w
+		|| fxScaler.outputHeight != h || fxScaler.colorTextureFormat != src.pixelFormat) {
+		[fxScaler release];
+		[fxOut release];
+		fxScaler = nil;
+		fxOut = nil;
+		if (![MTLFXSpatialScalerDescriptor supportsDevice:device]) { fxUnsupported = 1; return nil; }
+		MTLFXSpatialScalerDescriptor *d = [[MTLFXSpatialScalerDescriptor new] autorelease];
+		d.inputWidth = src.width;
+		d.inputHeight = src.height;
+		d.outputWidth = w;
+		d.outputHeight = h;
+		d.colorTextureFormat = src.pixelFormat;
+		d.outputTextureFormat = src.pixelFormat;
+		d.colorProcessingMode = MTLFXSpatialScalerColorProcessingModePerceptual;
+		fxScaler = [d newSpatialScalerWithDevice:device];
+		if (!fxScaler || (src.usage & fxScaler.colorTextureUsage) != fxScaler.colorTextureUsage) {
+			[fxScaler release];
+			fxScaler = nil;
+			fxUnsupported = 1;
+			return nil;
+		}
+		MTLTextureDescriptor *td = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:src.pixelFormat width:w height:h mipmapped:NO];
+		td.usage = fxScaler.outputTextureUsage | MTLTextureUsageShaderRead;
+		td.storageMode = MTLStorageModePrivate;
+		fxOut = [device newTextureWithDescriptor:td];
+	}
+	fxScaler.colorTexture = src;
+	fxScaler.outputTexture = fxOut;
+	[fxScaler encodeToCommandBuffer:cmd(enc)];
+	return fxOut;
+}
+
 void mc_present(Enc *enc, id<CAMetalDrawable> drawable, id<MTLTexture> src) {
 	endBlit(enc);
 	endRender(enc);
 	@autoreleasepool {
+		if (src.width != drawable.texture.width || src.height != drawable.texture.height) {
+			id<MTLTexture> up = fxUpscale(enc, src, drawable.texture.width, drawable.texture.height);
+			if (up) src = up;
+		}
 		MTLRenderPassDescriptor *rp = [MTLRenderPassDescriptor renderPassDescriptor];
 		rp.colorAttachments[0].texture = drawable.texture;
 		rp.colorAttachments[0].loadAction = MTLLoadActionDontCare;
@@ -1804,7 +1854,7 @@ void mc_present(Enc *enc, id<CAMetalDrawable> drawable, id<MTLTexture> src) {
 		id<MTLRenderCommandEncoder> r = [cmd(enc) renderCommandEncoderWithDescriptor:rp];
 		[r setRenderPipelineState:enc->ctx->present];
 		[r setFragmentTexture:src atIndex:0];
-		[r setFragmentSamplerState:enc->ctx->presentSampler atIndex:0];
+		[r setFragmentSamplerState:src.width == drawable.texture.width ? enc->ctx->presentSampler : enc->ctx->presentSamplerLinear atIndex:0];
 		[r drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
 		[r endEncoding];
 		double encodedAt = CACurrentMediaTime();
@@ -1867,13 +1917,17 @@ static int pqFill(Enc *enc, id<MTLTexture> src) {
 			toTexture:st destinationSlice:0 destinationLevel:0 destinationOrigin:MTLOriginMake(0, 0, 0)];
 		[b endEncoding];
 		[cmd(enc) encodeSignalEvent:pqEvent value:++pqValue];
+		// The pacer's lead is the frame's GPU time, measured here as mc_present does: the present command buffer completes
+		// only once the display releases its drawable, so timing that one would add up to a refresh or two of scanout.
+		double encodedAt = CACurrentMediaTime();
+		[cmd(enc) addCompletedHandler:^(id<MTLCommandBuffer> cb) { gpuLatency += (CACurrentMediaTime() - encodedAt - gpuLatency) * 0.1; }];
 	}
 	return k;
 }
 
 // Draws staging slot `slot` into `drawable` on a pqQueue command buffer that first waits for the slot's fill, presents it,
 // and frees the slot when the GPU is done with it.
-static void pqEncodePresent(id<CAMetalDrawable> drawable, int slot, uint64_t wait, double queuedAt) {
+static void pqEncodePresent(id<CAMetalDrawable> drawable, int slot, uint64_t wait) {
 	Ctx *ctx = pqCtx;
 	id<MTLCommandBuffer> p = [pqQueue commandBuffer];
 	[p encodeWaitForEvent:pqEvent value:wait];
@@ -1884,13 +1938,10 @@ static void pqEncodePresent(id<CAMetalDrawable> drawable, int slot, uint64_t wai
 	id<MTLRenderCommandEncoder> r = [p renderCommandEncoderWithDescriptor:rp];
 	[r setRenderPipelineState:ctx->present];
 	[r setFragmentTexture:pqStaging[slot] atIndex:0];
-	[r setFragmentSamplerState:ctx->presentSampler atIndex:0];
+	[r setFragmentSamplerState:pqStaging[slot].width == drawable.texture.width ? ctx->presentSampler : ctx->presentSamplerLinear atIndex:0];
 	[r drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
 	[r endEncoding];
-	[p addCompletedHandler:^(id<MTLCommandBuffer> cb) {
-		gpuLatency += (CACurrentMediaTime() - queuedAt - gpuLatency) * 0.1;
-		atomic_store(&pqBusy[slot], 0);
-	}];
+	[p addCompletedHandler:^(id<MTLCommandBuffer> cb) { atomic_store(&pqBusy[slot], 0); }];
 	paceWatch(drawable);
 	[p presentDrawable:drawable];
 	[p commit];
@@ -1919,7 +1970,6 @@ static _Atomic int pqScheduled;
 static _Atomic long pqDropped;
 static CAMetalLayer *pqLayer;
 static long pqCadence[PQ_SLOTS];
-static double pqQueuedAt[PQ_SLOTS];
 static uint64_t pqAcq;  // this frame's hand-off, published by pqSubmit after the commit
 void mc_cadence_present(id<CAMetalDrawable> drawable, int slot);
 
@@ -1929,7 +1979,6 @@ int mc_present_queued_acquire(Enc *enc, CAMetalLayer *layer, id<MTLTexture> src,
 	if (pqAcq) atomic_store(&pqBusy[pqAcq & 3], 0);  // two presents in one frame: the newer one wins
 	pqLayer = layer;
 	pqCadence[k] = cadence;
-	pqQueuedAt[k] = CACurrentMediaTime();
 	pqAcq = pqValue << 2 | (uint64_t) k;
 	return 1;
 }
@@ -1947,7 +1996,7 @@ static void pqWork(void) {
 				continue;
 			}
 			if (pqCadence[slot] >= 0) mc_cadence_present(drawable, (int) pqCadence[slot]);
-			pqEncodePresent(drawable, slot, h >> 2, pqQueuedAt[slot]);
+			pqEncodePresent(drawable, slot, h >> 2);
 		}
 	}
 }
@@ -1972,7 +2021,7 @@ static void pqSubmit(void) {
 	if (pqAcq) pqPublish();
 	if (!pqDrawable) return;
 	@autoreleasepool {
-		pqEncodePresent(pqDrawable, pqSlot, pqWait, CACurrentMediaTime());
+		pqEncodePresent(pqDrawable, pqSlot, pqWait);
 	}
 	[pqDrawable release];
 	pqDrawable = nil;

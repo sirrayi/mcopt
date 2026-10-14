@@ -17,7 +17,16 @@ import net.minecraft.world.level.ChunkPos;
 public final class EdgeCap {
 	private static final String MODE = System.getProperty("mcopt.edgeCap", "");
 	public static final boolean ON = !MODE.isEmpty() && !"false".equals(MODE);
-	private static final int FIXED = ON && !"true".equals(MODE) ? Integer.parseInt(MODE) : 0;
+	private static final int FIXED = ON && !"true".equals(MODE) ? parse(MODE) : 0;
+
+	private static int parse(String mode) {
+		try {
+			return Integer.parseInt(mode);
+		} catch (NumberFormatException e) {
+			System.out.println("[mcopt] edgeCap: \"" + mode + "\" isn't a number, using the default cap");
+			return 0;
+		}
+	}
 	private static final long HOLD_NS = Long.getLong("mcopt.edgeCap.holdMs", 1000) * 1_000_000L;
 	private static final int MARGIN = Integer.getInteger("mcopt.edgeCap.margin", 32);
 	private static final boolean LOG = Boolean.getBoolean("mcopt.edgeCap.log");

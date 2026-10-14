@@ -92,11 +92,13 @@ LodCols *mcl_cols_new(Ctx *ctx, const char *source, char *err, int errCap) {
 		id<MTLFunction> march = [[lib newFunctionWithName:@"lod_columns"] autorelease];
 		if (!march) {
 			snprintf(err, errCap, "columns.metal: no lod_columns");
+			[lib release];
 			return NULL;
 		}
 		id<MTLComputePipelineState> pso = [ctx->device newComputePipelineStateWithFunction:march error:&e];
 		if (!pso) {
 			lodErr(e, "lod_columns pipeline", err, errCap);
+			[lib release];
 			return NULL;
 		}
 		LodCols *l = calloc(1, sizeof(LodCols));
@@ -109,13 +111,13 @@ LodCols *mcl_cols_new(Ctx *ctx, const char *source, char *err, int errCap) {
 		l->segFill = f2 ? [ctx->device newComputePipelineStateWithFunction:f2 error:&e] : nil;
 		if (!l->segMax || !l->segFill) {
 			lodErr(e, "lod_seg pipelines", err, errCap);
-			return NULL;
+			goto fail;
 		}
 		id<MTLFunction> f3 = [[lib newFunctionWithName:@"lod_rows"] autorelease];
 		l->rows = f3 ? [ctx->device newComputePipelineStateWithFunction:f3 error:&e] : nil;
 		if (!l->rows) {
 			lodErr(e, "lod_rows pipeline", err, errCap);
-			return NULL;
+			goto fail;
 		}
 		l->vs = [lib newFunctionWithName:@"lod_comp_vs"];
 		l->fsVanilla = [lib newFunctionWithName:@"lod_comp_vanilla"];
@@ -133,7 +135,7 @@ LodCols *mcl_cols_new(Ctx *ctx, const char *source, char *err, int errCap) {
 		l->atlasSampler = [ctx->device newSamplerStateWithDescriptor:sd];
 		if (!l->vs || !l->fsVanilla || !l->fsGbuffer) {
 			snprintf(err, errCap, "columns.metal: missing entry points");
-			return NULL;
+			goto fail;
 		}
 		// the mesh (-Dmcopt.lod.render=mesh)
 		const char *kernels[] = {"lod_mesh_reset", "lod_mesh_cull", "lod_mesh_finish", "lod_mesh_quads", "lod_mesh_finish2", "lod_mesh_hz_clear", "lod_mesh_hz_prefix",
@@ -145,7 +147,7 @@ LodCols *mcl_cols_new(Ctx *ctx, const char *source, char *err, int errCap) {
 			*slots[i] = fn ? [ctx->device newComputePipelineStateWithFunction:fn error:&e] : nil;
 			if (!*slots[i]) {
 				lodErr(e, kernels[i], err, errCap);
-				return NULL;
+				goto fail;
 			}
 		}
 		l->meshVs = [lib newFunctionWithName:@"lod_mesh_vs2"];
@@ -156,7 +158,7 @@ LodCols *mcl_cols_new(Ctx *ctx, const char *source, char *err, int errCap) {
 		l->plantFsGbuffer = [lib newFunctionWithName:@"lod_mesh_plant_gbuffer"];
 		if (!l->meshVs || !l->meshFsVanilla || !l->meshFsGbuffer || !l->plantVs || !l->plantFsVanilla || !l->plantFsGbuffer) {
 			snprintf(err, errCap, "columns.metal: missing mesh entry points");
-			return NULL;
+			goto fail;
 		}
 		uint16_t idx[64 * 6];
 		for (int q = 0; q < 64; q++) {
@@ -169,6 +171,17 @@ LodCols *mcl_cols_new(Ctx *ctx, const char *source, char *err, int errCap) {
 		l->drawDone = [ctx->device newFence];
 		l->plantIdx = [ctx->device newBufferWithBytes:idx length:32 * 6 * sizeof(uint16_t) options:MTLResourceStorageModeShared];
 		return l;
+fail:
+		[l->segMax release]; [l->segFill release]; [l->rows release];
+		[l->vs release]; [l->fsVanilla release]; [l->fsGbuffer release];
+		[l->depth release]; [l->atlasSampler release];
+		[l->meshReset release]; [l->meshCull release]; [l->meshFinish release]; [l->meshQuads release]; [l->meshFinish2 release];
+		[l->hzClear release]; [l->hzPrefix release]; [l->meshEmit release]; [l->meshFinishList release];
+		[l->meshVs release]; [l->meshFsVanilla release]; [l->meshFsGbuffer release];
+		[l->plantVs release]; [l->plantFsVanilla release]; [l->plantFsGbuffer release];
+		[l->march release]; [l->library release];
+		free(l);
+		return NULL;
 	}
 }
 

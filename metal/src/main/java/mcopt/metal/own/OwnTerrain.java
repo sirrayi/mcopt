@@ -102,6 +102,21 @@ public final class OwnTerrain {
 	 * one draw a frame whose instance order is vanilla's visible sections far to near.
 	 */
 	public static final boolean TRANSLUCENT = Boolean.getBoolean("mcopt.own.translucent");
+	/**
+	 * -Dmcopt.own.rgssEarly (default true): with RGSS texture filtering, a fragment whose blend weight is 0 (a texel at least a pixel
+	 * wide) returns the nearest sample without taking the eight RGSS samples (terrain.metal sampleRGSS; the same picture, bit for bit).
+	 */
+	private static final boolean RGSS_EARLY = Boolean.parseBoolean(System.getProperty("mcopt.own.rgssEarly", "true"));
+	/**
+	 * -Dmcopt.own.rgssTri: RGSS's two mip levels blended by the atlas sampler's linear mip filter (4 samples at the exact level instead
+	 * of 4 at each of the two levels around it), and no nearest sample where RGSS's blend weight is 1 (terrain.metal sampleRGSS).
+	 */
+	private static final boolean RGSS_TRI = Boolean.getBoolean("mcopt.own.rgssTri");
+	/**
+	 * -Dmcopt.own.rgssOne (with rgssTri; opt-in, not vanilla-exact): far pixels take one sample at RGSS's level instead of the four
+	 * rotated-grid ones. Distant textures may differ slightly from vanilla (most visibly as shimmer in motion).
+	 */
+	private static final boolean RGSS_ONE = Boolean.getBoolean("mcopt.own.rgssOne");
 	/** -Dmcopt.own.level=true: opaque terrain samples the atlas at a computed level instead of with gradients (see terrain.metal). */
 	private static final boolean LEVEL = Boolean.getBoolean("mcopt.own.level");
 	/**
@@ -134,6 +149,13 @@ public final class OwnTerrain {
 	private static final boolean QUADS_BOX = COMPACT && Boolean.getBoolean("mcopt.own.quads.box");
 	/** The per-quad path's phase A and flat test read the cull's TUnit entries (record fields + section origin) in place of index -> record -> section. */
 	private static final boolean QUADS_FATT = !FAT && Boolean.getBoolean("mcopt.own.quads.fatT");
+	/* QuadFrame fields written every frame: like QUADS_FATT these are read once at startup (no probe key switches them). */
+	private static final int QUADS_DEBUG = Integer.getInteger("mcopt.own.quads.debug", 0);
+	private static final boolean QUADS_FLAT = Boolean.getBoolean("mcopt.own.quads.flat");
+	private static final boolean QUADS_CENTRE = Boolean.getBoolean("mcopt.own.quads.centre");
+	private static final boolean QUADS_GATE = Boolean.getBoolean("mcopt.own.quads.gate");
+	private static final boolean QUADS_ALU = Boolean.getBoolean("mcopt.own.quads.alu");
+	private static final boolean QUADS_LAZY = Boolean.getBoolean("mcopt.own.quads.lazy");
 	private static final int QUAD_FRAME_BYTES = 192;
 	/** Solid-section occlusion: the parameters' size (terrain.metal SolidOcc), the occluder depth's width (texels; height by aspect). */
 	private static final int SOLID_BYTES = 144, SOLID_WIDTH = Integer.getInteger("mcopt.own.solidOcc.width", 320);
@@ -191,6 +213,12 @@ public final class OwnTerrain {
 	private static final java.util.concurrent.atomic.LongAdder TS_RESORTS = new java.util.concurrent.atomic.LongAdder(), TS_RESORT_QUADS = new java.util.concurrent.atomic.LongAdder(),
 		TS_RESORT_NS = new java.util.concurrent.atomic.LongAdder(), TS_STORES = new java.util.concurrent.atomic.LongAdder(), TS_STORE_QUADS = new java.util.concurrent.atomic.LongAdder();
 	private long tsAt, tsFrames, tsMeshes, tsUnits, tsLeanUnits, tsAllUnits;
+	/**
+	 * -Dmcopt.own.frag.tOcc (probe key frag.tOcc; with uocc, not FAT or TFLAT): our translucent units tested against the unit test's
+	 * pyramid (terrain.metal own_t_occ), the hidden ones drawn as padding. Translucent records carry their section's translucent
+	 * vertex box (tfrustum's tBox) for it. Exact: a box behind depth already drawn has no fragment that passes the depth test.
+	 */
+	static final boolean T_OCC = Boolean.getBoolean("mcopt.own.frag.tOcc");
 	private static final boolean TFLAT = Boolean.getBoolean("mcopt.own.mesh.tflat") && !Boolean.getBoolean("mcopt.own.fat");
 	/** TCULL: a quad is left out only when the camera is this far behind its plane (blocks); nearer, it stays. */
 	private static final double TCULL_EPS = 1.0 / 64;
@@ -449,7 +477,7 @@ public final class OwnTerrain {
 		this.encoder = encoder;
 		this.ctx = MetalBridge.ctx(encoder);
 		this.enc = MetalBridge.enc(encoder);
-		this.own = OwnNative.create(this.ctx, (OwnPosTable.ON ? "#define OWN_EXACT_POS 1\n" : "") + (OwnQrec.ON ? "#define OWN_QREC 1\n" : "") + (VCOUNT ? "#define OWN_VCOUNT 1\n" : "") + (TFLAT ? "#define OWN_TFLAT 1\n" : "") + (TPROBE > 0 ? "#define OWN_TPROBE " + TPROBE + "\n" : "") + (OwnFrag.EXACT_SHIFT != 2 ? "#define A1_SH " + OwnFrag.EXACT_SHIFT + "\n" : "") + resource("/mcopt/own/terrain.metal"), COMPACT, FAT, CPU_CLIP);
+		this.own = OwnNative.create(this.ctx, (OwnPosTable.ON ? "#define OWN_EXACT_POS 1\n" : "") + (OwnQrec.ON ? "#define OWN_QREC 1\n" : "") + (VCOUNT ? "#define OWN_VCOUNT 1\n" : "") + (TFLAT ? "#define OWN_TFLAT 1\n" : "") + (RGSS_EARLY ? "" : "#define OWN_RGSS_VANILLA 1\n") + (RGSS_TRI ? "#define OWN_RGSS_TRI 1\n" : "") + (RGSS_ONE ? "#define OWN_RGSS_ONE 1\n" : "") + (TPROBE > 0 ? "#define OWN_TPROBE " + TPROBE + "\n" : "") + (OwnFrag.EXACT_SHIFT != 2 ? "#define A1_SH " + OwnFrag.EXACT_SHIFT + "\n" : "") + resource("/mcopt/own/terrain.metal"), COMPACT, FAT, CPU_CLIP);
 		// -Dmcopt.own.hizTile=true: the per-quad path's pyramid in one tiled pass for its first five levels (padded to 32 texels)
 		applyNativeFlags();
 		// -Dmcopt.own.gputime=true: GPU timestamps of our compute encoders (cull, list build, pyramid + test), logged per 500 frames
@@ -1329,27 +1357,43 @@ public final class OwnTerrain {
 			MemoryUtil.memPutInt(a + 4, slot);
 			MemoryUtil.memPutInt(a + 8, (c - 1) | 6 << 6 | 2 << 9);
 			MemoryUtil.memPutInt(a + 12, t.quadStart);
-			MemoryUtil.memPutInt(a + 16, 0);
-			MemoryUtil.memPutInt(a + 20, 255 | 255 << 8 | 255 << 16);
+			MemoryUtil.memPutInt(a + 16, tBoxLo(m.tBox));
+			MemoryUtil.memPutInt(a + 20, tBoxHi(m.tBox));
 			MemoryUtil.memPutInt(a + 24, -1);
 			MemoryUtil.memPutInt(a + 28, TPROBE == 2 ? i * RUN : 0);  // (no sub-boxes; a reused slot may hold an opaque unit's; tprobe 2: the unit's offset in the mesh)
 		}
 		if (sorted) {
 			m.sRecStart = m.tRecStart + m.tRecCount;
-			writeSortedRecs(a, m.tRecCount, t.quadCount, m.sortStart, slot);
+			writeSortedRecs(a, m.tRecCount, t.quadCount, m.sortStart, slot, m.tBox);
 		}
 	}
 
 	/** TS_BUILD: units records of a sorted translucent copy at quad index first (64-byte quads), n quads, meta bit 18. */
-	private static void writeSortedRecs(long a, int units, int n, int first, int slot) {
+	/** T_OCC: a translucent record's box corner from the mesh's vertex box (section-relative, + 16, a byte per axis, widened to whole
+	 * blocks and 1/16 past); no box (or T_OCC off): 0 and all 255, the whole range (never culled). */
+	private static int tBoxLo(float @Nullable [] b) {
+		if (!T_OCC || b == null || b[0] > b[3]) return 0;
+		int r = 0;
+		for (int c = 0; c < 3; c++) r |= Math.max(0, Math.min(255, (int) Math.floor(b[c] - TFR_EPS) + 16)) << (8 * c);
+		return r;
+	}
+
+	private static int tBoxHi(float @Nullable [] b) {
+		if (!T_OCC || b == null || b[0] > b[3]) return 255 | 255 << 8 | 255 << 16;
+		int r = 0;
+		for (int c = 0; c < 3; c++) r |= Math.max(0, Math.min(255, (int) Math.ceil(b[3 + c] + TFR_EPS) + 16)) << (8 * c);
+		return r;
+	}
+
+	private static void writeSortedRecs(long a, int units, int n, int first, int slot, float @Nullable [] box) {
 		for (int i = 0; i < units; i++, a += REC_BYTES) {
 			int c = Math.min(RUN, n - i * RUN);
 			MemoryUtil.memPutInt(a, first + i * RUN);
 			MemoryUtil.memPutInt(a + 4, slot);
 			MemoryUtil.memPutInt(a + 8, (c - 1) | 6 << 6 | 2 << 9 | 1 << 18);
 			MemoryUtil.memPutInt(a + 12, 0);
-			MemoryUtil.memPutInt(a + 16, 0);
-			MemoryUtil.memPutInt(a + 20, 255 | 255 << 8 | 255 << 16);
+			MemoryUtil.memPutInt(a + 16, tBoxLo(box));
+			MemoryUtil.memPutInt(a + 20, tBoxHi(box));
 			MemoryUtil.memPutInt(a + 24, -1);
 			MemoryUtil.memPutInt(a + 28, 0);
 		}
@@ -2522,7 +2566,7 @@ public final class OwnTerrain {
 			m.fSort = this.sortedCopy(t.quadStart, perm, kept, n);
 			m.fSortUnits = kept;
 			m.fsRec = this.allocRecs(rc);
-			writeSortedRecs(this.recAddress + (long) m.fsRec * REC_BYTES, rc, kept, m.fSort, slot);
+			writeSortedRecs(this.recAddress + (long) m.fsRec * REC_BYTES, rc, kept, m.fSort, slot, m.tBox);
 		}
 		long a = this.recAddress + (long) start * REC_BYTES;
 		for (int i = 0; i < rc; i++, a += REC_BYTES) {
@@ -2531,8 +2575,8 @@ public final class OwnTerrain {
 			MemoryUtil.memPutInt(a + 4, slot);
 			MemoryUtil.memPutInt(a + 8, (c - 1) | 6 << 6 | 2 << 9);
 			MemoryUtil.memPutInt(a + 12, t.quadStart);
-			MemoryUtil.memPutInt(a + 16, 0);
-			MemoryUtil.memPutInt(a + 20, 255 | 255 << 8 | 255 << 16);
+			MemoryUtil.memPutInt(a + 16, tBoxLo(m.tBox));
+			MemoryUtil.memPutInt(a + 20, tBoxHi(m.tBox));
 			MemoryUtil.memPutInt(a + 24, -1);
 			MemoryUtil.memPutInt(a + 28, TPROBE == 2 ? i * RUN : 0);
 		}
@@ -2610,6 +2654,43 @@ public final class OwnTerrain {
 			this.tStatRecs = this.tStatIn = this.tStatB = this.tStatC = this.tStatFrames = 0;
 			this.tStatLast = now;
 		}
+	}
+
+	/** T_OCC: the frame slot armed for the unit test this frame (-1 none). */
+	private int tOccK = -1;
+	private long tOccFrame = -1, tOccList;
+	/** (measurement, -Dmcopt.own.frag.tOccLog) per 600 frames: units listed, tested and hidden. */
+	private static final boolean TOCC_LOG = Boolean.getBoolean("mcopt.own.frag.tOccLog");
+	private final long[] tOccStat = new long[4];
+
+	/** T_OCC, before the call that runs the unit test: this frame's translucent list (filled later, before the commit) tested too. */
+	void tOccArm() {
+		if (!T_OCC || FAT || TFLAT || this.tArgs == 0 || !OwnProbe.bool("frag.tOcc", true)) return;
+		int k = (int) (this.frame % FRAMES);
+		if (this.tLists[k] == 0) return;
+		long ca = this.tArgsAddress + k * 64L + 20;  // (own_t_occ's a[5..7])
+		if (TOCC_LOG) {
+			// (the slot's last use is done: its counts of tested and hidden units)
+			this.tOccStat[0] += MemoryUtil.memGetInt(ca);
+			this.tOccStat[1] += Integer.toUnsignedLong(MemoryUtil.memGetInt(ca + 4));
+			this.tOccStat[2] += Integer.toUnsignedLong(MemoryUtil.memGetInt(ca + 8));
+			if (++this.tOccStat[3] >= 600) {
+				System.out.println(String.format("mcopt-own tOcc: per frame listed %.0f, tested %.0f, hidden %.0f", this.tOccStat[0] / 600.0, this.tOccStat[1] / 600.0, this.tOccStat[2] / 600.0));
+				java.util.Arrays.fill(this.tOccStat, 0);
+			}
+		}
+		MemoryUtil.memPutInt(ca, 0);
+		MemoryUtil.memPutInt(ca + 4, 0);
+		MemoryUtil.memPutInt(ca + 8, 0);
+		MemoryUtil.memPutInt(ca + 32, 0x80000000);  // (a[13]: nothing filled yet)
+		this.tOccList = this.tLists[k];
+		this.tOccK = k;
+		this.tOccFrame = this.frame;
+		OwnNative.tOcc(this.own, this.tLists[k], this.tArgs, k * 64L, this.tListCap);
+	}
+
+	void tOccDisarm() {
+		if (T_OCC) OwnNative.tOcc(this.own, 0, 0, 0, 0);
 	}
 
 	public boolean drawTranslucent(CameraRenderState camera, long fadeMs, GpuSampler sampler, GpuTextureView atlas, List<SectionRenderDispatcher.RenderSection> visible) {
@@ -2785,6 +2866,11 @@ public final class OwnTerrain {
 		// (thalf: the rich part [0, split) here, the lean part [split, at) at +32)
 		boolean leanPart = this.tHalfNow && !TFLAT && tSplit < at;
 		int richN = leanPart ? tSplit : at;
+		if (T_OCC && this.tOccK == k && this.tOccFrame == this.frame && this.tOccList == this.tLists[k]) {
+			// (the armed list, not regrown since: own_t_occ / own_t_compact act on it; else a[13] keeps bit 31 and they do nothing)
+			MemoryUtil.memPutInt(args + 20, at);
+			MemoryUtil.memPutInt(args + 52, richN);
+		}
 		MemoryUtil.memPutInt(args, TFLAT ? at * 6 : RUN * 6);
 		MemoryUtil.memPutInt(args + 4, TFLAT ? (at > 0 ? 1 : 0) : richN);
 		MemoryUtil.memPutInt(args + 32, RUN * 6);
@@ -2901,13 +2987,13 @@ public final class OwnTerrain {
 				this.qDrawnB += (MemoryUtil.memGetInt(a + 40) + MemoryUtil.memGetInt(a + 60)) / 6;
 				this.qDrawnFrames++;
 			}
-			MemoryUtil.memPutInt(q + 160, Integer.getInteger("mcopt.own.quads.debug", 0));
-			MemoryUtil.memPutInt(q + 164, Boolean.getBoolean("mcopt.own.quads.flat") ? 1 : 0);
-			MemoryUtil.memPutInt(q + 168, Boolean.getBoolean("mcopt.own.quads.centre") ? 1 : 0);
-			MemoryUtil.memPutInt(q + 176, Boolean.getBoolean("mcopt.own.quads.gate") ? 1 : 0);
-			MemoryUtil.memPutInt(q + 180, Boolean.getBoolean("mcopt.own.quads.alu") ? 1 : 0);
+			MemoryUtil.memPutInt(q + 160, QUADS_DEBUG);
+			MemoryUtil.memPutInt(q + 164, QUADS_FLAT ? 1 : 0);
+			MemoryUtil.memPutInt(q + 168, QUADS_CENTRE ? 1 : 0);
+			MemoryUtil.memPutInt(q + 176, QUADS_GATE ? 1 : 0);
+			MemoryUtil.memPutInt(q + 180, QUADS_ALU ? 1 : 0);
 			MemoryUtil.memPutInt(q + 184, QUADS_FATT ? 1 : 0);
-			MemoryUtil.memPutInt(q + 188, Boolean.getBoolean("mcopt.own.quads.lazy") ? 1 : 0);
+			MemoryUtil.memPutInt(q + 188, QUADS_LAZY ? 1 : 0);
 			MemoryUtil.memPutInt(q + 172, this.quadsMesh ? 1 : 0);  // (OwnFrag.QMESH)
 			OwnNative.quadsA(this.own, this.enc, q, QUAD_FRAME_BYTES, this.recBuffer, this.args, this.tested, this.qPrev, this.qCur, this.qWords, this.qIdx,
 				this.qArgs, this.fat);

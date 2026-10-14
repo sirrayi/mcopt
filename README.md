@@ -8,7 +8,7 @@ A Minecraft performance mod for Apple Silicon Macs. Since 0.3.0-alpha.1 it draws
 
 ## Requirements
 
-- An Apple Silicon Mac on macOS 26 or later
+- An Apple Silicon Mac on macOS 15 or later
 - Java 25 (the official launcher and Prism download it for 26.3; nothing to install)
 - Minecraft 26.3 with Fabric Loader 0.19.5 or newer
 
@@ -33,7 +33,16 @@ Shows an fps counter in the top-left corner (hidden with F1 or F3; fn + F1 or fn
 - The perf profile is on by default.
 - `profile=none` in `~/Library/Application Support/minecraft/config/mcopt.properties` (in Prism, the instance's
   `minecraft/config` folder) turns it off. The first launch writes that file.
+- `mcopt.fps=false` hides the fps counter.
 - Far terrain is an experimental opt-in: `mcopt.lod=true` in the same file, for Macs with 10 or more GPU cores.
+
+Opt-in settings (in the same file, or as `-D` flags):
+
+- `mcopt.renderScale=0.5` - render the game at a fraction of the window size and upscale (not pixel-exact: blurrier).
+- `mcopt.own.rgssTri=true` - atlas sampling at the exact mip level with linear filtering (not pixel-exact).
+- `mcopt.own.rgssOne=true` - with rgssTri: one far sample instead of four (not pixel-exact: distant shimmer).
+- `mcopt.metal.presentQueue=true` - present frames from a second command queue; `=acquire` also acquires there.
+- `mcopt.own.frag.tOcc=false` - turns the translucent-occlusion default back off.
 
 ## Numbers
 

@@ -22,10 +22,11 @@ abstract class HudMixin {
 	// The count changes once a second; the label is rebuilt only then, not every frame.
 	@Unique private int mcoptFps$shown = -1;
 	@Unique private String mcoptFps$label = "";
+	@Unique private static final boolean mcoptFps$on = Boolean.parseBoolean(System.getProperty("mcopt.fps", "true"));
 
 	@Inject(method = "extractRenderState", at = @At("TAIL"))
 	private void mcoptFps$draw(GuiGraphicsExtractor graphics, DeltaTracker deltaTracker, CallbackInfo ci) {
-		if (this.isHidden() || this.minecraft.getDebugOverlay().showDebugScreen() || this.minecraft.gui.screen() instanceof LevelLoadingScreen) {
+		if (!mcoptFps$on || this.isHidden() || this.minecraft.getDebugOverlay().showDebugScreen() || this.minecraft.gui.screen() instanceof LevelLoadingScreen) {
 			return;
 		}
 		int fps = this.minecraft.getFps();

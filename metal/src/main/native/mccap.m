@@ -63,7 +63,7 @@ void mcc_enc_state(Enc *enc, int64_t *out) {
 
 // Up to len bytes of b at offset (clamped to its length) into out; -1 if b isn't CPU-visible.
 int mcc_bytes(id<MTLBuffer> b, int64_t offset, int len, void *out) {
-	if (b.storageMode != MTLStorageModeShared) return -1;
+	if (b.storageMode != MTLStorageModeShared || offset < 0 || len < 0) return -1;
 	int64_t n = (int64_t) b.length - offset;
 	if (n > len) n = len;
 	if (n <= 0) return 0;
