@@ -1510,7 +1510,7 @@ void mc_r_pipeline(Enc *enc, id<MTLRenderPipelineState> pso, id<MTLDepthStencilS
 	[r setRenderPipelineState:pso];
 	if (depth) [r setDepthStencilState:depth];
 	if (depth && depth.label.length) enc->tlDepthWritten = 1;  // (a writing depth state: mc_depth_state_new labels it)
-	[r setCullMode:cull ? MTLCullModeBack : MTLCullModeNone];
+	[r setCullMode:cull == 2 ? MTLCullModeFront : cull ? MTLCullModeBack : MTLCullModeNone];  // (2: Axiom's front-face cull)
 	[r setTriangleFillMode:wireframe ? MTLTriangleFillModeLines : MTLTriangleFillModeFill];
 	[r setDepthBias:biasConstant slopeScale:biasSlope clamp:0];
 	enc->primitive = (MTLPrimitiveType) primitive;

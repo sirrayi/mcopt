@@ -18,6 +18,7 @@ import java.nio.file.Path;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import mcopt.metal.compat.Axiom;
 import org.jspecify.annotations.Nullable;
 import org.lwjgl.PointerBuffer;
 import org.lwjgl.system.MemoryStack;
@@ -55,7 +56,8 @@ final class MetalPipeline implements BackendRenderPipeline {
 	/** For a pipeline with a depth state: its Metal source, to build {@link #withoutDepth()} from when a pass first needs it; null after. */
 	private @Nullable Translated vertexSource, fragmentSource;
 	final List<BindGroupLayout.UniformDescription> uniforms;
-	final boolean cull;
+	/** 0 none, 1 back, 2 front (Axiom's RenderPipelineExt on the CreateInfo; mc_r_pipeline maps it to MTLCullMode). */
+	final int cull;
 	final boolean wireframe;
 	final float depthBiasConstant;
 	final float depthBiasSlope;
@@ -80,7 +82,7 @@ final class MetalPipeline implements BackendRenderPipeline {
 		this.info = info;
 		this.name = info.name();
 		this.uniforms = info.uniforms();
-		this.cull = info.cull();
+		this.cull = !info.cull() ? 0 : Axiom.cullFront(info) ? 2 : 1;
 		this.wireframe = info.polygonMode() == PolygonMode.WIREFRAME;
 		DepthStencilState depth = info.depthStencilState();
 		this.depthBiasConstant = depth != null ? depth.depthBiasConstant() : 0;
